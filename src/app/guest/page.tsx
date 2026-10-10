@@ -77,6 +77,7 @@ export default function GuestbookPage() {
   const saveReply = () => {
     const target = entries.find(x => x.id === replyFor);
     if (!target || !replyText.trim()) return;
+    if (target.secret) { toast('비밀글 답글은 보안 기능 보완 후 제공됩니다'); return; }
     if (!user && !replyName.trim()) { toast('닉네임을 입력해 주세요'); return; }
     const c: CommentRow = {
       id: newId(), target: 'guest', targetId: target.id,
@@ -161,7 +162,7 @@ export default function GuestbookPage() {
               <small>
                 {fmtDate(e.date)}
                 {/* 답글은 모두 가능 (v2.0 포크 제보) — 비밀글은 읽을 수 있는 사람만 */}
-                {canRead(e) && (
+                {canRead(e) && !e.secret && (
                   <span style={{ cursor: 'var(--cur-pointer,pointer)', marginLeft: 10, color: 'var(--accent)' }}
                     onClick={() => { setReplyFor(e.id); setReplyText(''); }}>
                     답글
