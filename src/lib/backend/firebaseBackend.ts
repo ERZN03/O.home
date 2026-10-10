@@ -280,7 +280,16 @@ export async function createFirebaseBackend(cfg: FirebaseCfg): Promise<Backend> 
         const raw = d.data() as { data?: Record<string, unknown>; sort?: number };
         seen.set(d.id, { sort: raw.sort ?? 0, item: { ...(raw.data ?? {}), id: d.id } as T });
       }));
-      return [...seen.values()].sort((a, b) => a.sort - b.sort).map(v => v.item);
+      const rows = [...seen.values()].sort((a, b) => a.sort - b.sort).map(v => v.item);
+      // 비밀 방명록 본문은 공개 guestbook 문서에 저장하지 않는다.
+      // 관리자만 읽을 수 있는 guestbook_private에서 읽어 화면 데이터와 합친다.
+      if (coll === 'guestbook' && await isAdminNow()) {
+        const privateSnaps = await getDocsFromServer(collection(db, 'guestbook_private'));
+        const bodies = new Map(privateSnaps.docs.map(d => [d.id, d.data().body]));
+        return rows.map(it => (it.secret === true && typeof bodies.get(it.id) === 'string'
+          ? { ...it, body: bodies.get(it.id) } as T : it));
+      }
+      return rows;
     },
 
     async syncList<T extends ListItem>(coll: string, prev: T[], next: T[], uid: string | null) {
@@ -302,9 +311,24 @@ export async function createFirebaseBackend(cfg: FirebaseCfg): Promise<Backend> 
         const batch = writeBatch(db);
         part.forEach(({ item, sort }) => {
           const { authorId, visibility, editorIds } = metaOf(item, uid, visFloorOf(coll, item));
-          batch.set(doc(db, coll, item.id), {
-            data: item, authorId, visibility, editorIds, sort, updatedAt: Date.now(),
-          });
+          if (coll === 'guestbook' && item.secret === true) {
+            // 공개 문서는 비밀글 존재 여부만 보여준다. 본문을 절대 포함하지 않는다.
+            const { body: originalBody, ...publicItem } = item;
+            batch.set(doc(db, coll, item.id), {
+              data: { ...publicItem, body: '' }, authorId, visibility: 'public',
+              editorIds, sort, updatedAt: Date.now(),
+            });
+            // 새 비밀글과 공개 표시를 동일한 원자적 배치로 저장.
+            if (typeof originalBody === 'string' && originalBody.length > 0) {
+              batch.set(doc(db, 'guestbook_private', item.id), {
+                body: originalBody, updatedAt: Date.now(),
+              });
+            }
+          } else {
+            batch.set(doc(db, coll, item.id), {
+              data: item, authorId, visibility, editorIds, sort, updatedAt: Date.now(),
+            });
+          }
         });
         await batch.commit();
       }
@@ -318,7 +342,10 @@ export async function createFirebaseBackend(cfg: FirebaseCfg): Promise<Backend> 
       }
       for (const part of chunk(deletes, 400)) {
         const batch = writeBatch(db);
-        part.forEach(id => batch.delete(doc(db, coll, id)));
+        part.forEach(id => {
+          batch.delete(doc(db, coll, id));
+          if (coll === 'guestbook') batch.delete(doc(db, 'guestbook_private', id));
+        });
         await batch.commit();
       }
     },
